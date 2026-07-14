@@ -1097,6 +1097,10 @@ document.getElementById("fDate").value=todayStr();
 document.getElementById("aDate").value=todayStr();
 renderAll();
 if(getToken()&&state.settings.gistId)syncNow(true);
+// re-sync whenever the app returns to the foreground (home-screen apps resume without reloading)
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="visible"&&getToken()&&state.settings.gistId)syncNow(true);
+});
 </script>
 </body>
 </html>
