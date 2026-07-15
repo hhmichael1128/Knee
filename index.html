@@ -63,6 +63,15 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .seg{display:flex;flex-wrap:wrap;gap:7px}
 .seg button{padding:8px 13px;border:1px solid var(--line);background:#fff;border-radius:999px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
 .seg button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.seg.sm button{padding:6px 11px;font-size:12.5px}
+.gaitq{margin-top:6px}
+.gq-row{display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap}
+.gq-row .gq-lab{font-size:12px;font-weight:600;color:var(--muted);min-width:104px}
+.cmp{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+.cmp th,.cmp td{border:1px solid var(--line);padding:6px 8px;text-align:center}
+.cmp th{background:var(--bg);font-weight:700;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
+.cmp td:first-child,.cmp th:first-child{text-align:left}
+.cmp tr.hot td{background:var(--bad-soft)}
 .painrow{display:flex;align-items:center;gap:12px}
 .painrow input[type=range]{flex:1;accent-color:var(--accent)}
 .painval{font-size:20px;font-weight:800;min-width:34px;text-align:center;border-radius:9px;padding:3px 0}
@@ -278,6 +287,12 @@ details.adv summary{font-size:13px;font-weight:600;color:var(--accent);cursor:po
       <div class="togglerow"><span class="t-label">Swelling today</span><label class="switch"><input type="checkbox" id="fSwelling"><span class="slider"></span></label></div>
       <div class="togglerow"><span class="t-label">Lateral joint line pain (meniscus site)</span><label class="switch"><input type="checkbox" id="fJointLine"><span class="slider"></span></label></div>
     </div>
+    <label>Gait quality (tests the medial-catching hypothesis — stride &amp; loading vs. step volume)</label>
+    <div class="gaitq">
+      <div class="gq-row"><span class="gq-lab">Stride today</span><div class="seg sm" id="fStride"><button data-v="">n/a</button><button data-v="normal">Normal</button><button data-v="long">Long</button></div></div>
+      <div class="gq-row"><span class="gq-lab">Main surface</span><div class="seg sm" id="fSurface"><button data-v="">n/a</button><button data-v="flat">Flat</button><button data-v="stairs">Stairs</button><button data-v="incline">Incline</button></div></div>
+      <div class="gq-row"><span class="gq-lab">Medial catching</span><div class="seg sm" id="fCatch"><button data-v="none" class="on">None</button><button data-v="occasional">Occasional</button><button data-v="frequent">Frequent</button></div></div>
+    </div>
     <label>Note</label>
     <textarea id="fNote" placeholder="How did it feel? Anything for Ryan or Dr. Rodeo?"></textarea>
 
@@ -330,6 +345,13 @@ details.adv summary{font-size:13px;font-weight:600;color:var(--accent);cursor:po
   </div>
   <div class="card"><h2>Pain during activity</h2><div class="chartbox"><canvas id="chPain"></canvas></div>
     <div class="insight" id="painInsight"></div></div>
+  <div class="card" id="catchCard">
+    <h2>Medial catching — triggers vs. step volume</h2>
+    <div class="helptext">Testing the hypothesis: does <b>terminal-extension demand</b> (long stride + stairs/incline) predict the catching sensation better than <b>step volume</b>? The chart plots catching against both. The table below is the head-to-head — if the hypothesis holds, catching days should show more long-stride/loaded surfaces but <i>not</i> necessarily more steps.</div>
+    <div class="chartbox" style="margin-top:10px"><canvas id="chCatch"></canvas></div>
+    <div id="catchTable"></div>
+    <div class="insight" id="catchInsight"></div>
+  </div>
   <div class="card"><h2>Bike minutes</h2><div class="chartbox"><canvas id="chBike"></canvas></div>
     <div class="insight" id="bikeInsight"></div></div>
   <div class="card"><h2>Backwards treadmill incline</h2><div class="chartbox"><canvas id="chIncline"></canvas></div>
@@ -734,6 +756,10 @@ function readExRows(){
     return {name:i1.value.trim(),sets:i2.value?+i2.value:null,reps:i3.value?+i3.value:null,weight:i4.value.trim()||null};
   }).filter(x=>x.name);
 }
+/* single-select segmented pickers (stride / surface / catching) */
+function segVal(id){const b=document.querySelector(`#${id} button.on`);return b?b.dataset.v:"";}
+function setSeg(id,v){document.querySelectorAll(`#${id} button`).forEach(b=>b.classList.toggle("on",b.dataset.v===(v||"")));}
+["fStride","fSurface","fCatch"].forEach(id=>document.querySelectorAll(`#${id} button`).forEach(b=>b.addEventListener("click",()=>setSeg(id,b.dataset.v))));
 function saveEntry(){
   const e={
     id:editingId||uid(),date:document.getElementById("fDate").value||todayStr(),
@@ -741,6 +767,9 @@ function saveEntry(){
     resolved:document.getElementById("fResolved").checked,
     swelling:document.getElementById("fSwelling").checked,
     jointLine:document.getElementById("fJointLine").checked,
+    stride:segVal("fStride")||null,
+    surface:segVal("fSurface")||null,
+    catch:segVal("fCatch")||"none",
     note:document.getElementById("fNote").value.trim(),
     exercises:readExRows(),
     bike:+document.getElementById("fBike").value||null,
@@ -763,6 +792,7 @@ function resetForm(){
   painEl.value=0;painVal.textContent="0";painVal.className="painval p-ok";
   ["fSwelling","fJointLine"].forEach(id=>document.getElementById(id).checked=false);
   document.getElementById("fResolved").checked=true;
+  setSeg("fStride","");setSeg("fSurface","");setSeg("fCatch","none");
   document.getElementById("fNote").value="";document.getElementById("fBike").value="";document.getElementById("fIncline").value="";
   document.getElementById("fExRows").innerHTML="";document.getElementById("fDetails").open=false;
 }
@@ -776,6 +806,7 @@ function editEntry(id){
   document.getElementById("fResolved").checked=e.resolved!==false;
   document.getElementById("fSwelling").checked=!!e.swelling;
   document.getElementById("fJointLine").checked=!!e.jointLine;
+  setSeg("fStride",e.stride||"");setSeg("fSurface",e.surface||"");setSeg("fCatch",e.catch||"none");
   document.getElementById("fNote").value=e.note||"";
   document.getElementById("fBike").value=e.bike||"";
   document.getElementById("fIncline").value=e.incline??"";
@@ -805,6 +836,9 @@ function renderRecent(all){
     if(e.resolved===false)tags.push('<span class="tag bad">not resolved 24h</span>');
     if(e.bike)tags.push(`<span class="tag">bike ${e.bike}m</span>`);
     if(e.incline!=null)tags.push(`<span class="tag">incline ${e.incline}</span>`);
+    if(e.catch&&e.catch!=="none")tags.push(`<span class="tag warn">catching: ${e.catch}</span>`);
+    if(e.stride==="long")tags.push('<span class="tag">long stride</span>');
+    if(e.surface&&e.surface!=="flat")tags.push(`<span class="tag">${esc(e.surface)}</span>`);
     const exs=(e.exercises||[]).map(x=>`${esc(x.name)}${x.sets?` ${x.sets}×${x.reps??"?"}`:""}${x.weight?` @${esc(x.weight)}`:""}`).join(" · ");
     return `<div class="entry">
       <div class="top"><span class="type">${TYPE_LABEL[e.type]||e.type}</span><span class="date">${fmt(e.date)}</span></div>
@@ -895,7 +929,68 @@ function renderCharts(){
   const inc=seriesByDate(e=>e.incline);
   mkChart("chIncline",{type:"line",data:{labels:inc.labels,datasets:[{data:inc.data,borderColor:"#16a34a",stepped:true,pointRadius:3}]},options:baseOpts});
   trendTxt("inclineInsight",inc.labels.map((l,i)=>({d:inc.raw[i],v:inc.data[i]})),"","up","Log the incline notch when you do backwards treadmill — the rule from your history: one notch at a time, lateral joint-line ache ≤3/10 and gone by next day before progressing.");
+  renderCatch();
   renderExerciseChart();
+}
+const CATCH_LVL={none:0,occasional:1,frequent:2};
+function renderCatch(){
+  // one record per day that has a catching value; keep the worst catch + that day's gait flags
+  const byDay={};
+  live(state.entries).forEach(e=>{
+    if(e.catch==null&&e.stride==null&&e.surface==null)return;
+    const lvl=CATCH_LVL[e.catch||"none"];
+    const cur=byDay[e.date];
+    if(!cur||lvl>cur.lvl)byDay[e.date]={lvl,stride:e.stride,surface:e.surface};
+    else{if(e.stride==="long")cur.stride="long";if(e.surface&&e.surface!=="flat")cur.surface=e.surface;}
+  });
+  const days=Object.keys(byDay).sort();
+  const card=document.getElementById("catchCard");
+  const steps=HEALTH.daily.steps||{};
+  if(days.length<2){
+    document.getElementById("catchTable").innerHTML="";
+    document.getElementById("catchInsight").innerHTML=`<b>Start logging gait quality.</b> Each session, set stride, surface and the medial-catching level. Once a handful of days are in, this view compares catching against your step count (from Apple Health) and against stride/surface load — so you can see which one actually tracks the symptom. The whole point is to test whether steps predict it (your prior read: they don't).`;
+    if(charts.chCatch){charts.chCatch.destroy();delete charts.chCatch;}
+    return;
+  }
+  // chart: catching level (0-2) + step count on 2nd axis; mark loaded-demand days
+  const demandDay=(d)=>byDay[d].stride==="long"||["stairs","incline"].includes(byDay[d].surface);
+  mkChart("chCatch",{data:{labels:days.map(fmtShort),datasets:[
+    {type:"line",label:"Catching (0–2)",data:days.map(d=>byDay[d].lvl),borderColor:"#d97706",backgroundColor:"#d9770622",yAxisID:"y",stepped:true,pointRadius:days.map(d=>demandDay(d)?5:2.5),
+      pointBackgroundColor:days.map(d=>demandDay(d)?"#dc2626":"#d97706"),tension:0,fill:true},
+    {type:"bar",label:"Steps",data:days.map(d=>steps[d]??null),backgroundColor:"#93c5fd",yAxisID:"y1"}]},
+    options:{...baseOpts,plugins:{legend:{display:true,labels:{font:{size:10},boxWidth:10}}},
+      scales:{x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false}},
+        y:{position:"left",min:0,max:2,ticks:{stepSize:1,font:{size:10},callback:v=>["none","occ.","freq."][v]||v}},
+        y1:{position:"right",beginAtZero:true,grid:{display:false},ticks:{font:{size:10}},title:{display:true,text:"steps",font:{size:9}}}}}});
+  // head-to-head table: group days by catch level
+  const groups={0:[],1:[],2:[]};days.forEach(d=>groups[byDay[d].lvl].push(d));
+  const stat=(ds)=>{
+    const sv=ds.map(d=>steps[d]).filter(v=>v!=null);
+    const avgSteps=sv.length?Math.round(sv.reduce((a,b)=>a+b,0)/sv.length):null;
+    const longPct=ds.length?Math.round(ds.filter(d=>byDay[d].stride==="long").length/ds.length*100):0;
+    const loadPct=ds.length?Math.round(ds.filter(d=>["stairs","incline"].includes(byDay[d].surface)).length/ds.length*100):0;
+    return {n:ds.length,avgSteps,longPct,loadPct};
+  };
+  const rows=[["No catching",0],["Occasional",1],["Frequent",2]];
+  document.getElementById("catchTable").innerHTML=`<table class="cmp">
+    <tr><th>Catching level</th><th>Days</th><th>Avg steps</th><th>% long stride</th><th>% stairs/incline</th></tr>
+    ${rows.map(([lab,lv])=>{const s=stat(groups[lv]);return `<tr class="${lv===2?"hot":""}"><td>${lab}</td><td>${s.n}</td><td>${s.avgSteps!=null?s.avgSteps.toLocaleString():"–"}</td><td>${s.longPct}%</td><td>${s.loadPct}%</td></tr>`;}).join("")}
+  </table>`;
+  // insight: which predictor separates the groups?
+  const noCatch=stat(groups[0]),some=stat([...groups[1],...groups[2]]);
+  let verdict;
+  if(some.n<2||noCatch.n<2){verdict="Not enough days in each group yet to compare — keep logging.";}
+  else{
+    const stepGap=(noCatch.avgSteps!=null&&some.avgSteps!=null)?some.avgSteps-noCatch.avgSteps:null;
+    const loadGap=(some.longPct+some.loadPct)-(noCatch.longPct+noCatch.loadPct);
+    const stepMatters=stepGap!=null&&Math.abs(stepGap)>=1500;
+    const loadMatters=loadGap>=20;
+    if(loadMatters&&!stepMatters)verdict=`So far this supports the hypothesis: catching days carry more long-stride / loaded-surface exposure (${some.longPct+some.loadPct} vs ${noCatch.longPct+noCatch.loadPct} combined) while step counts are similar (${some.avgSteps?.toLocaleString()} vs ${noCatch.avgSteps?.toLocaleString()}). Terminal-extension demand is tracking the symptom better than volume.`;
+    else if(stepMatters&&!loadMatters)verdict=`So far catching tracks step volume (${some.avgSteps?.toLocaleString()} vs ${noCatch.avgSteps?.toLocaleString()} steps) more than stride/surface — the opposite of the working hypothesis. Worth noting for Ryan.`;
+    else if(stepMatters&&loadMatters)verdict=`Both step volume and loading are elevated on catching days — they may be confounded (long days are also high-step days). Try logging some deliberately short-stride high-step days to separate them.`;
+    else verdict=`No clear separator yet — the groups look similar on both steps and loading. More logged days will sharpen this.`;
+  }
+  document.getElementById("catchInsight").innerHTML=`<b>Head-to-head:</b> ${verdict} <span style="color:var(--muted)">Red points on the chart mark long-stride or stairs/incline days. This is observational and hypothesis-level — not a substitute for Ryan's or Dr. Rodeo's assessment.</span>`;
 }
 function renderExerciseChart(){
   const sel=document.getElementById("exSelect");
@@ -1420,6 +1515,7 @@ function makeReport(){
       <li>Pain during activity: avg ${avg}/10, max ${max}/10 (threshold ≤3)</li>
       <li>Symptom flags: ${flags.length} session(s) with pain &gt;3, swelling, or &gt;24h soreness</li>
       <li>Lateral joint line pain noted: ${es.filter(e=>e.jointLine).length} session(s)</li>
+      ${(()=>{const c=es.filter(e=>e.catch&&e.catch!=="none");if(!c.length)return"";const lng=c.filter(e=>e.stride==="long").length,ld=c.filter(e=>["stairs","incline"].includes(e.surface)).length;return `<li>Medial catching reported: ${c.length} day(s) (${c.filter(e=>e.catch==="frequent").length} frequent); of those, ${lng} on a long stride and ${ld} on stairs/incline — see "medial catching" analysis-log entry for the full symptom characterization</li>`;})()}
     </ul>
     <h2>Program position</h2>
     <ul>
