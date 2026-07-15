@@ -265,27 +265,33 @@ details.adv summary{font-size:13px;font-weight:600;color:var(--accent);cursor:po
   </div>
 
   <div class="card">
-    <h2>Log a session</h2>
+    <div class="seg" id="fMode" style="margin-bottom:12px">
+      <button data-v="session" class="on">Training session</button>
+      <button data-v="checkin">Daily check-in</button>
+    </div>
+    <div class="helptext" id="modeHelp" style="margin-top:-4px;margin-bottom:4px"></div>
     <label>Date</label>
     <input type="date" id="fDate">
-    <label>Session type</label>
-    <div class="seg" id="fType">
-      <button data-v="hss">HSS PT</button>
-      <button data-v="dreamchaser">Dreamchaser</button>
-      <button data-v="bulletproof">Bulletproof</button>
-      <button data-v="bridge">Bridge session</button>
-      <button data-v="cardio">Cardio only</button>
-      <button data-v="rest">Rest / check-in</button>
+    <div id="typeWrap">
+      <label>Session type</label>
+      <div class="seg" id="fType">
+        <button data-v="hss">HSS PT</button>
+        <button data-v="dreamchaser">Dreamchaser</button>
+        <button data-v="bulletproof">Bulletproof</button>
+        <button data-v="bridge">Bridge session</button>
+        <button data-v="cardio">Cardio only</button>
+      </div>
     </div>
-    <label>Pain during (0–10) — target ≤3</label>
+    <label id="painLabel">Pain during (0–10) — target ≤3</label>
     <div class="painrow">
       <input type="range" id="fPain" min="0" max="10" step="1" value="0">
       <div class="painval p-ok" id="fPainVal">0</div>
     </div>
+    <div id="resolvePrompt"></div>
     <div style="margin-top:10px">
-      <div class="togglerow"><span class="t-label">Yesterday's soreness resolved within 24h</span><label class="switch"><input type="checkbox" id="fResolved" checked><span class="slider"></span></label></div>
       <div class="togglerow"><span class="t-label">Swelling today</span><label class="switch"><input type="checkbox" id="fSwelling"><span class="slider"></span></label></div>
       <div class="togglerow"><span class="t-label">Lateral joint line pain (meniscus site)</span><label class="switch"><input type="checkbox" id="fJointLine"><span class="slider"></span></label></div>
+      <div class="togglerow"><span class="t-label">Posterior (back-of-knee) pain <span style="color:var(--muted);font-weight:400">— e.g. standing up after sitting</span></span><label class="switch"><input type="checkbox" id="fPosterior"><span class="slider"></span></label></div>
     </div>
     <label>Gait quality (tests the medial-catching hypothesis — stride &amp; loading vs. step volume)</label>
     <div class="gaitq">
@@ -607,7 +613,7 @@ const BP = {
       "Pain <2/10; nothing lingering the day after"]}
   ]
 };
-const TYPE_LABEL = {hss:"HSS PT",dreamchaser:"Dreamchaser",bulletproof:"Bulletproof",bridge:"Bridge session",cardio:"Cardio",rest:"Rest / check-in"};
+const TYPE_LABEL = {hss:"HSS PT",dreamchaser:"Dreamchaser",bulletproof:"Bulletproof",bridge:"Bridge session",cardio:"Cardio",rest:"Rest / check-in",checkin:"Daily check-in"};
 
 /* ===== Bulletproof day templates (from Michael's program PDF; home = minimal-equipment variant; note = knee-specific caution) ===== */
 const BP_DAYS={
@@ -712,17 +718,18 @@ function renderHeader(){
      <span class="chip">Symptoms resolve within 24h</span>
      <span class="chip">Patellar avulsion — load quads conservatively</span>`;
 }
+const isTraining=(e)=>e.type!=="rest"&&e.type!=="checkin";
 function renderStats(){
   const es=live(state.entries);
   document.getElementById("statWeeks").textContent=weeksPostOp().w;
-  const days=new Set(es.filter(e=>e.type!=="rest").map(e=>e.date));
+  const days=new Set(es.filter(isTraining).map(e=>e.date));
   let streak=0,cur=new Date();
   const key=(dt)=>dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");
   if(!days.has(key(cur)))cur.setDate(cur.getDate()-1);
   while(days.has(key(cur))){streak++;cur.setDate(cur.getDate()-1);}
   document.getElementById("statStreak").textContent=streak;
   const now=new Date();const monday=new Date(now);monday.setDate(now.getDate()-((now.getDay()+6)%7));
-  const wk=es.filter(e=>e.type!=="rest"&&new Date(e.date)>=new Date(key(monday))).length;
+  const wk=es.filter(e=>isTraining(e)&&new Date(e.date)>=new Date(key(monday))).length;
   document.getElementById("statWeekSessions").textContent=wk;
   const cutoff=new Date();cutoff.setDate(cutoff.getDate()-7);
   const recent=es.filter(e=>new Date(e.date)>=cutoff&&e.pain!=null);
@@ -730,12 +737,47 @@ function renderStats(){
 }
 
 /* ================= LOG FORM ================= */
-let formType="hss", editingId=null;
+let formType="hss", editingId=null, logMode="session";
 document.querySelectorAll("#fType button").forEach(b=>b.addEventListener("click",()=>{
   formType=b.dataset.v;
   document.querySelectorAll("#fType button").forEach(x=>x.classList.toggle("on",x===b));
 }));
 document.querySelector('#fType button[data-v="hss"]').classList.add("on");
+/* mode: training session vs lightweight daily check-in */
+function setMode(m){
+  logMode=m;editingId=null;
+  document.querySelectorAll("#fMode button").forEach(x=>x.classList.toggle("on",x.dataset.v===m));
+  const checkin=m==="checkin";
+  document.getElementById("typeWrap").style.display=checkin?"none":"";
+  document.getElementById("fDetails").style.display=checkin?"none":"";
+  document.getElementById("painLabel").textContent=checkin?"Knee pain today (0–10)":"Pain during (0–10) — target ≤3";
+  document.getElementById("saveBtn").textContent=checkin?"Save check-in":"Save session";
+  document.getElementById("modeHelp").innerHTML=checkin
+    ? "A 30-second daily note on how the knee feels — pain, symptoms, gait. Doesn't count as a training session; it fills the gaps between workouts and feeds the catching analysis."
+    : "Log a workout: HSS PT, Bulletproof, cardio, etc. Adds to your streak and weekly count.";
+  renderResolvePrompt();
+}
+document.querySelectorAll("#fMode button").forEach(b=>b.addEventListener("click",()=>setMode(b.dataset.v)));
+/* contextual "did your last session settle within 24h?" prompt */
+function lastTrainingBefore(dateStr){
+  const cut=dateStr||todayStr();
+  return live(state.entries).filter(e=>e.type!=="rest"&&e.type!=="checkin"&&e.date<cut)
+    .sort((a,b)=>b.date.localeCompare(a.date))[0]||null;
+}
+function renderResolvePrompt(){
+  const host=document.getElementById("resolvePrompt");
+  const dateStr=document.getElementById("fDate").value||todayStr();
+  const prev=lastTrainingBefore(dateStr);
+  const withinWindow=prev&&daysBetween(prev.date,dateStr)<=2;
+  if(logMode==="checkin"&&withinWindow){
+    host.innerHTML=`<div class="togglerow"><span class="t-label">Did your ${esc(TYPE_LABEL[prev.type]||prev.type)} on ${fmtShort(prev.date)} settle within 24h?</span><label class="switch"><input type="checkbox" id="fResolved" checked><span class="slider"></span></label></div>`;
+  }else if(logMode==="session"){
+    host.innerHTML=`<div class="togglerow"><span class="t-label">Yesterday's soreness already settled (last session)</span><label class="switch"><input type="checkbox" id="fResolved" checked><span class="slider"></span></label></div>`;
+  }else{
+    host.innerHTML=`<input type="checkbox" id="fResolved" checked style="display:none">`;
+  }
+}
+document.getElementById("fDate")&&document.getElementById("fDate").addEventListener("change",renderResolvePrompt);
 const painEl=document.getElementById("fPain"),painVal=document.getElementById("fPainVal");
 painEl.addEventListener("input",()=>{
   const v=+painEl.value;painVal.textContent=v;
@@ -761,28 +803,30 @@ function segVal(id){const b=document.querySelector(`#${id} button.on`);return b?
 function setSeg(id,v){document.querySelectorAll(`#${id} button`).forEach(b=>b.classList.toggle("on",b.dataset.v===(v||"")));}
 ["fStride","fSurface","fCatch"].forEach(id=>document.querySelectorAll(`#${id} button`).forEach(b=>b.addEventListener("click",()=>setSeg(id,b.dataset.v))));
 function saveEntry(){
+  const checkin=logMode==="checkin";
   const e={
     id:editingId||uid(),date:document.getElementById("fDate").value||todayStr(),
-    type:formType,pain:+painEl.value,
+    type:checkin?"checkin":formType,pain:+painEl.value,
     resolved:document.getElementById("fResolved").checked,
     swelling:document.getElementById("fSwelling").checked,
     jointLine:document.getElementById("fJointLine").checked,
+    posterior:document.getElementById("fPosterior").checked,
     stride:segVal("fStride")||null,
     surface:segVal("fSurface")||null,
     catch:segVal("fCatch")||"none",
     note:document.getElementById("fNote").value.trim(),
-    exercises:readExRows(),
-    bike:+document.getElementById("fBike").value||null,
-    incline:document.getElementById("fIncline").value?+document.getElementById("fIncline").value:null,
+    exercises:checkin?[]:readExRows(),
+    bike:checkin?null:(+document.getElementById("fBike").value||null),
+    incline:checkin?null:(document.getElementById("fIncline").value?+document.getElementById("fIncline").value:null),
     updatedAt:Date.now()
   };
   if(editingId){const i=state.entries.findIndex(x=>x.id===editingId);if(i>-1)state.entries[i]=e;else state.entries.push(e);}
   else state.entries.push(e);
-  editingId=null;document.getElementById("saveBtn").textContent="Save session";
+  editingId=null;
   resetForm();persist();renderAll();
-  if(e.pain>3||!e.resolved||e.swelling){
-    if(confirm("This session is over your symptom threshold (pain >3, unresolved soreness, or swelling). Add a question for Ryan about it?")){
-      state.notes.push({id:uid(),kind:"q",who:"Ryan",text:`Flagged ${fmt(e.date)}: pain ${e.pain}/10${e.swelling?", swelling":""}${!e.resolved?", soreness not resolved in 24h":""}${e.note?" — "+e.note:""}`,done:false,updatedAt:Date.now()});
+  if(e.pain>3||!e.resolved||e.swelling||e.posterior){
+    if(confirm("This entry is over your symptom threshold (pain >3, unresolved soreness, swelling, or posterior pain). Add a question for Ryan about it?")){
+      state.notes.push({id:uid(),kind:"q",who:"Ryan",text:`Flagged ${fmt(e.date)}: pain ${e.pain}/10${e.swelling?", swelling":""}${e.posterior?", posterior knee pain":""}${!e.resolved?", last session not resolved in 24h":""}${e.note?" — "+e.note:""}`,done:false,updatedAt:Date.now()});
       persist();renderNotes();
     }
   }
@@ -790,22 +834,25 @@ function saveEntry(){
 function resetForm(){
   document.getElementById("fDate").value=todayStr();
   painEl.value=0;painVal.textContent="0";painVal.className="painval p-ok";
-  ["fSwelling","fJointLine"].forEach(id=>document.getElementById(id).checked=false);
-  document.getElementById("fResolved").checked=true;
+  ["fSwelling","fJointLine","fPosterior"].forEach(id=>document.getElementById(id).checked=false);
   setSeg("fStride","");setSeg("fSurface","");setSeg("fCatch","none");
   document.getElementById("fNote").value="";document.getElementById("fBike").value="";document.getElementById("fIncline").value="";
   document.getElementById("fExRows").innerHTML="";document.getElementById("fDetails").open=false;
+  renderResolvePrompt();
+  document.getElementById("saveBtn").textContent=logMode==="checkin"?"Save check-in":"Save session";
 }
 function editEntry(id){
   const e=state.entries.find(x=>x.id===id);if(!e)return;
   editingId=id;
+  setMode(e.type==="checkin"?"checkin":"session");
   document.getElementById("fDate").value=e.date;
-  formType=e.type;
-  document.querySelectorAll("#fType button").forEach(x=>x.classList.toggle("on",x.dataset.v===e.type));
+  if(e.type!=="checkin"){formType=e.type;document.querySelectorAll("#fType button").forEach(x=>x.classList.toggle("on",x.dataset.v===e.type));}
   painEl.value=e.pain;painEl.dispatchEvent(new Event("input"));
-  document.getElementById("fResolved").checked=e.resolved!==false;
+  renderResolvePrompt();
+  const rc=document.getElementById("fResolved");if(rc)rc.checked=e.resolved!==false;
   document.getElementById("fSwelling").checked=!!e.swelling;
   document.getElementById("fJointLine").checked=!!e.jointLine;
+  document.getElementById("fPosterior").checked=!!e.posterior;
   setSeg("fStride",e.stride||"");setSeg("fSurface",e.surface||"");setSeg("fCatch",e.catch||"none");
   document.getElementById("fNote").value=e.note||"";
   document.getElementById("fBike").value=e.bike||"";
@@ -813,7 +860,7 @@ function editEntry(id){
   document.getElementById("fExRows").innerHTML="";
   (e.exercises||[]).forEach(addExRow);
   if((e.exercises||[]).length||e.bike||e.incline!=null)document.getElementById("fDetails").open=true;
-  document.getElementById("saveBtn").textContent="Update session";
+  document.getElementById("saveBtn").textContent="Update "+(e.type==="checkin"?"check-in":"session");
   window.scrollTo({top:0,behavior:"smooth"});
 }
 function deleteEntry(id){
@@ -833,6 +880,7 @@ function renderRecent(all){
     tags.push(`<span class="tag ${e.pain>3?"bad":""}">pain ${e.pain}/10</span>`);
     if(e.swelling)tags.push('<span class="tag bad">swelling</span>');
     if(e.jointLine)tags.push('<span class="tag warn">joint line</span>');
+    if(e.posterior)tags.push('<span class="tag warn">posterior pain</span>');
     if(e.resolved===false)tags.push('<span class="tag bad">not resolved 24h</span>');
     if(e.bike)tags.push(`<span class="tag">bike ${e.bike}m</span>`);
     if(e.incline!=null)tags.push(`<span class="tag">incline ${e.incline}</span>`);
@@ -895,7 +943,7 @@ function renderCalendar(){
   // insight: PT frequency + logging
   const ptDates=(CLINICAL.records||[]).filter(r=>r.type==="pt").map(r=>r.date).sort();
   const recentPT=ptDates.filter(d=>daysBetween(d,todayK)<=28).length;
-  const logged=live(state.entries).filter(e=>e.type!=="rest"&&daysBetween(e.date,todayK)<=28).length;
+  const logged=live(state.entries).filter(e=>isTraining(e)&&daysBetween(e.date,todayK)<=28).length;
   document.getElementById("calInsight").innerHTML=
     `<b>Reading the dots:</b> your clinical history (${ptDates.length} PT sessions, from records) fills the past automatically — new records keep it updated when Claude processes them. `+
     `${recentPT} HSS sessions in the last 4 weeks${logged?`, plus ${logged} sessions you've logged yourself`:`. Amber dots will appear as you log your own sessions — that's the habit that completes the picture between PT visits`}.`;
@@ -1088,10 +1136,10 @@ function renderWeek(){
   const el=document.getElementById("weekReview");
   const today=todayStr();
   const wk=live(state.entries).filter(e=>daysBetween(e.date,today)<7&&e.date<=today);
-  const train=wk.filter(e=>e.type!=="rest");
+  const train=wk.filter(isTraining);
   const pains=wk.filter(e=>e.pain!=null).map(e=>e.pain);
   const avgP=pains.length?(pains.reduce((a,b)=>a+b,0)/pains.length):null;
-  const flags=wk.filter(e=>e.pain>3||e.swelling||e.resolved===false).length;
+  const flags=wk.filter(e=>e.pain>3||e.swelling||e.resolved===false||e.posterior).length;
   const steps=HEALTH.daily.steps||{};
   const wkSteps=Object.entries(steps).filter(([d])=>daysBetween(d,today)<7&&d<=today).map(([,v])=>v);
   const avgS=wkSteps.length?Math.round(wkSteps.reduce((a,b)=>a+b,0)/wkSteps.length):null;
@@ -1113,7 +1161,7 @@ function renderWeek(){
     <div class="insight" style="margin-top:10px"><b>This week's focus:</b> ${esc(focus)}${avgS==null?" (Step data updates when you drop a fresh Apple Health export.)":""}</div>`;
 }
 function badgeDefs(){
-  const es=live(state.entries);const days=new Set(es.filter(e=>e.type!=="rest").map(e=>e.date));
+  const es=live(state.entries);const days=new Set(es.filter(isTraining).map(e=>e.date));
   const lefs=(CLINICAL.metricSeries&&CLINICAL.metricSeries.lefs)||[];
   const lastLefs=lefs.length?lefs[lefs.length-1][1]:0;
   let streak=0,cur=new Date();const key=(dt)=>dstr(dt);
@@ -1127,7 +1175,7 @@ function badgeDefs(){
     {i:"📈",n:"LEFS 50 Club",d:"Function score past 50/80",e:lastLefs>=50},
     {i:"📝",n:"First Log",d:"Logged your first session on this site",e:es.length>0},
     {i:"🔥",n:"3-Day Streak",d:"Trained 3 days in a row",e:streak>=3},
-    {i:"💪",n:"Ten Timer",d:"10 sessions logged",e:es.filter(e=>e.type!=="rest").length>=10},
+    {i:"💪",n:"Ten Timer",d:"10 sessions logged",e:es.filter(isTraining).length>=10},
     {i:"😌",n:"Quiet Knee",d:"5 straight training days all under threshold",e:painWeek},
     {i:"📊",n:"LEFS 72 — Goal",d:"Ryan's formal goal: minimal limitation",e:lastLefs>=72},
     {i:"🏃",n:"Cleared for Takeoff",d:"Pass sport testing Sept 28 → running unlocks",e:false},
@@ -1203,6 +1251,7 @@ function genWorkout(){
 }
 function logGenWorkout(phase,day){
   const tpl=BP_DAYS[phase][day-1];
+  setMode("session");
   formType="bulletproof";
   document.querySelectorAll("#fType button").forEach(x=>x.classList.toggle("on",x.dataset.v==="bulletproof"));
   document.getElementById("fExRows").innerHTML="";
@@ -1515,6 +1564,7 @@ function makeReport(){
       <li>Pain during activity: avg ${avg}/10, max ${max}/10 (threshold ≤3)</li>
       <li>Symptom flags: ${flags.length} session(s) with pain &gt;3, swelling, or &gt;24h soreness</li>
       <li>Lateral joint line pain noted: ${es.filter(e=>e.jointLine).length} session(s)</li>
+      ${es.filter(e=>e.posterior).length?`<li>Posterior (back-of-knee) pain noted: ${es.filter(e=>e.posterior).length} day(s) — reported esp. on standing up after prolonged bent-knee sitting, transient (seconds), load-related</li>`:""}
       ${(()=>{const c=es.filter(e=>e.catch&&e.catch!=="none");if(!c.length)return"";const lng=c.filter(e=>e.stride==="long").length,ld=c.filter(e=>["stairs","incline"].includes(e.surface)).length;return `<li>Medial catching reported: ${c.length} day(s) (${c.filter(e=>e.catch==="frequent").length} frequent); of those, ${lng} on a long stride and ${ld} on stairs/incline — see "medial catching" analysis-log entry for the full symptom characterization</li>`;})()}
     </ul>
     <h2>Program position</h2>
@@ -1657,6 +1707,7 @@ function renderAll(){
 document.getElementById("exLib").innerHTML=EX_LIB.map(x=>`<option value="${x}">`).join("");
 document.getElementById("fDate").value=todayStr();
 document.getElementById("aDate").value=todayStr();
+setMode("session");
 renderAll();
 if(getToken()&&state.settings.gistId)syncNow(true);
 // re-sync whenever the app returns to the foreground (home-screen apps resume without reloading)
