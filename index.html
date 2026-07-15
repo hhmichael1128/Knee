@@ -315,6 +315,7 @@ details.adv summary{font-size:13px;font-weight:600;color:var(--accent);cursor:po
     </details>
 
     <button class="primary" onclick="saveEntry()" id="saveBtn">Save session</button>
+    <div id="flagBanner"></div>
   </div>
 
   <div class="card">
@@ -756,6 +757,7 @@ function setMode(m){
     ? "A 30-second daily note on how the knee feels — pain, symptoms, gait. Doesn't count as a training session; it fills the gaps between workouts and feeds the catching analysis."
     : "Log a workout: HSS PT, Bulletproof, cardio, etc. Adds to your streak and weekly count.";
   renderResolvePrompt();
+  const fb=document.getElementById("flagBanner");if(fb)fb.innerHTML="";
 }
 document.querySelectorAll("#fMode button").forEach(b=>b.addEventListener("click",()=>setMode(b.dataset.v)));
 /* contextual "did your last session settle within 24h?" prompt */
@@ -824,13 +826,37 @@ function saveEntry(){
   else state.entries.push(e);
   editingId=null;
   resetForm();persist();renderAll();
-  if(e.pain>3||!e.resolved||e.swelling||e.posterior){
-    if(confirm("This entry is over your symptom threshold (pain >3, unresolved soreness, swelling, or posterior pain). Add a question for Ryan about it?")){
-      state.notes.push({id:uid(),kind:"q",who:"Ryan",text:`Flagged ${fmt(e.date)}: pain ${e.pain}/10${e.swelling?", swelling":""}${e.posterior?", posterior knee pain":""}${!e.resolved?", last session not resolved in 24h":""}${e.note?" — "+e.note:""}`,done:false,updatedAt:Date.now()});
-      persist();renderNotes();
-    }
-  }
+  const reasons=[];
+  if(e.pain>3)reasons.push("pain "+e.pain+"/10");
+  if(e.swelling)reasons.push("swelling");
+  if(e.posterior)reasons.push("posterior knee pain");
+  if(e.jointLine)reasons.push("lateral joint line pain");
+  if(e.catch&&e.catch!=="none")reasons.push("medial catching ("+e.catch+")");
+  if(!e.resolved)reasons.push("last session not resolved in 24h");
+  showFlagBanner(e,reasons);
 }
+let pendingFlag=null;
+function showFlagBanner(e,reasons){
+  const host=document.getElementById("flagBanner");
+  if(!host)return;
+  if(!reasons.length){host.innerHTML="";pendingFlag=null;return;}
+  pendingFlag={date:e.date,reasons,note:e.note};
+  host.innerHTML=`<div class="insight warn" style="margin-top:12px">
+    <b>Saved.</b> This ${e.type==="checkin"?"check-in":"session"} is over your symptom threshold (${reasons.join(", ")}). Want to queue a note about it for Ryan?
+    <div style="display:flex;gap:8px;margin-top:9px">
+      <button class="mini" style="background:var(--accent);color:#fff;border-color:var(--accent)" onclick="addFlagQuestion()">Add to my Ryan list</button>
+      <button class="mini" onclick="dismissFlag()">Not now</button>
+    </div>
+  </div>`;
+}
+function addFlagQuestion(){
+  if(!pendingFlag)return;
+  state.notes.push({id:uid(),kind:"q",who:"Ryan",text:`Flagged ${fmt(pendingFlag.date)}: ${pendingFlag.reasons.join(", ")}${pendingFlag.note?" — "+pendingFlag.note:""}`,done:false,updatedAt:Date.now()});
+  persist();renderNotes();
+  document.getElementById("flagBanner").innerHTML=`<div class="insight" style="margin-top:12px"><b>Added to your Ryan list.</b> Find it under the PT Notes tab, edit or check it off anytime.</div>`;
+  pendingFlag=null;
+}
+function dismissFlag(){document.getElementById("flagBanner").innerHTML="";pendingFlag=null;}
 function resetForm(){
   document.getElementById("fDate").value=todayStr();
   painEl.value=0;painVal.textContent="0";painVal.className="painval p-ok";
