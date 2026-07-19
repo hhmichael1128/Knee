@@ -826,14 +826,22 @@ function saveEntry(){
   else state.entries.push(e);
   editingId=null;
   resetForm();persist();renderAll();
+  // threshold triggers (jointLine is a known benign pattern; occasional catching is being tracked, not alarmed)
+  const trigger=e.pain>3||e.swelling||e.posterior||e.resolved===false||e.catch==="frequent";
   const reasons=[];
   if(e.pain>3)reasons.push("pain "+e.pain+"/10");
   if(e.swelling)reasons.push("swelling");
   if(e.posterior)reasons.push("posterior knee pain");
-  if(e.jointLine)reasons.push("lateral joint line pain");
-  if(e.catch&&e.catch!=="none")reasons.push("medial catching ("+e.catch+")");
-  if(!e.resolved)reasons.push("last session not resolved in 24h");
-  showFlagBanner(e,reasons);
+  if(e.catch==="frequent")reasons.push("frequent medial catching");
+  if(e.resolved===false)reasons.push("last session not resolved in 24h");
+  if(trigger){
+    if(e.jointLine)reasons.push("lateral joint line pain (known pattern)");
+    if(e.catch==="occasional")reasons.push("occasional medial catching");
+  }
+  // suppress the re-prompt if an open auto-flag from the last 7 days already covers these
+  const kinds=(t)=>["pain ","swelling","posterior","catching","resolved"].filter(k=>t.includes(k));
+  const already=live(state.notes).some(n=>n.kind==="q"&&!n.done&&n.text.startsWith("Flagged")&&(Date.now()-(n.updatedAt||0))<7*864e5&&kinds(reasons.join(", ")).every(k=>n.text.includes(k)));
+  showFlagBanner(e,trigger&&!already?reasons:[]);
 }
 let pendingFlag=null;
 function showFlagBanner(e,reasons){
@@ -984,12 +992,16 @@ function trendTxt(id,series,unit,goodDir,emptyMsg){
   const el=document.getElementById(id);if(!el)return;
   const pts=series.filter(p=>p.v!=null);
   if(pts.length<2){el.innerHTML=`<b>Not enough data yet.</b> ${emptyMsg}`;return;}
-  const mid=Math.floor(pts.length/2);
-  const a=pts.slice(0,mid).reduce((s,p)=>s+p.v,0)/mid;
-  const b=pts.slice(mid).reduce((s,p)=>s+p.v,0)/(pts.length-mid);
+  // split at the TIME midpoint (not sample count) so uneven logging density can't fake a trend
+  const t0=new Date(pts[0].d).getTime(),t1=new Date(pts[pts.length-1].d).getTime();
+  const midT=(t0+t1)/2;
+  let early=pts.filter(p=>new Date(p.d).getTime()<midT),late=pts.filter(p=>new Date(p.d).getTime()>=midT);
+  if(!early.length||!late.length){const m=Math.floor(pts.length/2);early=pts.slice(0,m);late=pts.slice(m);}
+  const a=early.reduce((s,p)=>s+p.v,0)/early.length;
+  const b=late.reduce((s,p)=>s+p.v,0)/late.length;
   const d=b-a;const dir=d>0.05?"rising":d<-0.05?"falling":"flat";
   const good=(goodDir==="down")===(d<0)||dir==="flat";
-  el.innerHTML=`<b>Trend:</b> ${dir} (${a.toFixed(1)} → ${b.toFixed(1)} ${unit}, first half vs recent half of your logs). ${good?"That's the right direction — keep the same progression rate.":"Moving the wrong way — worth easing volume and mentioning to Ryan if it continues."} Latest: ${pts[pts.length-1].v}${unit} on ${fmtShort(pts[pts.length-1].d)}.`;
+  el.innerHTML=`<b>Trend:</b> ${dir} (${a.toFixed(1)} → ${b.toFixed(1)} ${unit}, earlier vs recent period). ${good?"That's the right direction — keep the same progression rate.":"Moving the wrong way — worth easing volume and mentioning to Ryan if it continues."} Latest: ${pts[pts.length-1].v}${unit} on ${fmtShort(pts[pts.length-1].d)}.`;
 }
 function renderCharts(){
   const pain=seriesByDate(e=>e.pain);
@@ -1014,8 +1026,12 @@ function renderCatch(){
     if(e.catch==null&&e.stride==null&&e.surface==null)return;
     const lvl=CATCH_LVL[e.catch||"none"];
     const cur=byDay[e.date];
-    if(!cur||lvl>cur.lvl)byDay[e.date]={lvl,stride:e.stride,surface:e.surface};
-    else{if(e.stride==="long")cur.stride="long";if(e.surface&&e.surface!=="flat")cur.surface=e.surface;}
+    if(!cur){byDay[e.date]={lvl,stride:e.stride,surface:e.surface};}
+    else{
+      cur.lvl=Math.max(cur.lvl,lvl);
+      if(e.stride==="long")cur.stride="long";else if(!cur.stride&&e.stride)cur.stride=e.stride;
+      if(["stairs","incline"].includes(e.surface))cur.surface=e.surface;else if(!cur.surface&&e.surface)cur.surface=e.surface;
+    }
   });
   const days=Object.keys(byDay).sort();
   const card=document.getElementById("catchCard");
@@ -1086,8 +1102,7 @@ document.getElementById("exSelect").addEventListener("change",renderExerciseChar
 function renderTimeline(){
   const items=live(state.milestones).map(m=>({...m}));
   items.push({id:"_today",date:todayStr(),label:`Today — week ${weeksPostOp().w} post-op`,today:true});
-  if(state.settings.followupDate)items.push({id:"_fu",date:state.settings.followupDate,label:"Physician follow-up — explosive/impact clearance decision",pending:true});
-  else items.push({id:"_fu",date:"2099-01-01",label:"Physician follow-up — explosive/impact clearance (not yet scheduled)",pending:true,nodate:true});
+  if(state.settings.followupDate&&!live(state.milestones).some(m=>m.date===state.settings.followupDate))items.push({id:"_fu",date:state.settings.followupDate,label:"Physician follow-up",pending:true});
   items.sort((a,b)=>a.date.localeCompare(b.date));
   document.getElementById("timeline").innerHTML=items.map(m=>{
     const past=m.date<=todayStr()&&!m.pending;
@@ -1167,7 +1182,7 @@ function renderWeek(){
   const avgP=pains.length?(pains.reduce((a,b)=>a+b,0)/pains.length):null;
   const flags=wk.filter(e=>e.pain>3||e.swelling||e.resolved===false||e.posterior).length;
   const steps=HEALTH.daily.steps||{};
-  const wkSteps=Object.entries(steps).filter(([d])=>daysBetween(d,today)<7&&d<=today).map(([,v])=>v);
+  const wkSteps=Object.entries(steps).filter(([d])=>daysBetween(d,today)<7&&d<today).map(([,v])=>v); // excludes today (partial)
   const avgS=wkSteps.length?Math.round(wkSteps.reduce((a,b)=>a+b,0)/wkSteps.length):null;
   const over=wkSteps.filter(v=>v>=8000).length;
   const counts={};train.forEach(e=>counts[e.type]=(counts[e.type]||0)+1);
@@ -1273,7 +1288,10 @@ function workoutSignals(){
   const lefs=(CLINICAL.metricSeries&&CLINICAL.metricSeries.lefs)||[];
   s.lefs=lefs.length?lefs[lefs.length-1][1]:null;
   // record what we actually read (transparency)
-  if(s.stepsYest!=null)s.read.push(`Steps recently: ${Math.round(s.stepsYest).toLocaleString()}/day${s.bigStepDay?" — high, ambient knee load elevated":""}`);
+  const stepDays=Object.keys(steps).sort();const lastStepDay=stepDays[stepDays.length-1];
+  s.stepsStale=lastStepDay?daysBetween(lastStepDay,today)>3:true;
+  if(s.stepsYest!=null&&!s.stepsStale)s.read.push(`Steps recently: ${Math.round(s.stepsYest).toLocaleString()}/day${s.bigStepDay?" — high, ambient knee load elevated":""}`);
+  else if(lastStepDay)s.read.push(`Step data last synced ${fmtShort(lastStepDay)} — re-export Apple Health so load detection stays live (manual big-day toggle still works)`);
   if(s.stairDownPct!=null)s.read.push(`Stair-descent capacity: ${s.stairDownPct}% of pre-injury baseline${s.stairDownPct<70?" — still the main deficit":""}`);
   if(s.catch>0)s.read.push(`Medial catching in last 3 days: ${["none","occasional","frequent"][s.catch]}`);
   if(s.posterior)s.read.push("Posterior knee pain logged in last 3 days");
@@ -1287,16 +1305,16 @@ function workoutPlan(s){
   const focus=[],caution=[];
   // emphasis: close the stair-descent / eccentric-quad gap (the documented priority)
   const emphEccentric=s.stairDownPct!=null&&s.stairDownPct<75;
-  if(emphEccentric)focus.push(`Your stair-descent capacity is ${s.stairDownPct}% of baseline — the clearest gap before Sept 28. Do the ⭐ eccentric / step-down work <b>first</b> today while fresh, and if it's pain-free take these to the top of your rep range.`);
+  if(emphEccentric)focus.push(`Your stair-descent capacity is ${s.stairDownPct}% of baseline — the clearest gap before Sept 28. Do the ⭐ eccentric / step-down work <b>first</b> today while fresh, and if it\u2019s pain-free take these to the top of your rep range (the avulsion RPE ≤7 cap still applies).`);
   // catching → protect loaded terminal extension, shorten stride, prioritise hip + hamstring timing
-  if(s.catch>=1)caution.push(`Medial catching logged recently → keep <b>stride short</b> today, and go easy on loaded terminal-knee-extension work (⚠ marked). The theory in your log points at hip/glute-med control and hamstring timing — those ⭐ items matter more today than adding quad load.`);
+  if(s.catch>=1)caution.push(`Medial catching logged recently → keep <b>stride short</b> today and go easy on machine/loaded knee-extension work (⚠ marked). Banded TKEs and tempo step-downs stay in — they\u2019re part of the plan from your workup. The hip/glute-med control work (⭐) matters more today than adding quad load.`);
   // posterior → deep loaded flexion + heavy hamstring eccentrics
   if(s.posterior)caution.push("Posterior knee pain logged recently → ease off deep loaded knee flexion and heavy hamstring eccentrics; expect a few seconds of stiffness standing from deep positions and stop if it sharpens.");
   // big step day
   if(s.bigStepDay)caution.push(`${s.manualBig?"You flagged a big walking day":"Apple Health shows a high-step day just now"} — every past swelling episode followed 8k+ step days, so today runs at RPE ≤6 with a set trimmed.`);
   // regexes to flag exercises
   const emphRe=/step.?down|eccentric|leg press|split squat|spanish|calf raise|rfe|deficit/i;
-  const cautionCatchRe=/leg extension|terminal|tke|knee extension/i;
+  const cautionCatchRe=/leg.?extension/i; // machine/loaded open-chain only — banded TKEs stay (part of his plan)
   const cautionPostRe=/nordic|rdl|hamstring curl|good ?morning|deadlift/i;
   return {focus,caution,
     exFlags:(name)=>{
@@ -1304,7 +1322,7 @@ function workoutPlan(s){
       if(emphEccentric&&emphRe.test(name))f.push({t:"⭐ priority",c:"var(--good)"});
       if(s.catch>=1&&cautionCatchRe.test(name))f.push({t:"⚠ ease today",c:"var(--warn)"});
       if(s.posterior&&cautionPostRe.test(name))f.push({t:"⚠ posterior",c:"var(--warn)"});
-      if((s.stairDownPct!=null&&s.stairDownPct<75)&&/hip|glute|airplane|hike|clamshell|copenhagen|balance/i.test(name)&&s.catch>=1)f.push({t:"⭐ control",c:"var(--good)"});
+      if(s.catch>=1&&/hip|glute|airplane|hike|clamshell|copenhagen|balance|hamstring/i.test(name))f.push({t:"⭐ control",c:"var(--good)"});
       return f;
     }};
 }
@@ -1325,7 +1343,10 @@ function genWorkout(){
     return;
   }
   const phase=s.phase;
-  const day=wDayOverride&&wDayOverride>0?wDayOverride:((state.progress.lastBpDay||0)%3)+1;
+  // rotation: prefer the most recent logged Bulletproof note ("Day N") so manual logs advance it too
+  const lastBp=live(state.entries).filter(e=>e.type==="bulletproof"&&/Day\s*([123])/.test(e.note||"")).sort((a,b)=>b.date.localeCompare(a.date))[0];
+  const lastDay=lastBp?+lastBp.note.match(/Day\s*([123])/)[1]:(state.progress.lastBpDay||0);
+  const day=wDayOverride&&wDayOverride>0?wDayOverride:(lastDay%3)+1;
   const tpl=BP_DAYS[phase][day-1];
   const plan=workoutPlan(s);
   const badge=readinessBadge(s);
@@ -1444,19 +1465,23 @@ function renderLibrary(){
       <div class="xres"><b>Load/resistance:</b> ${esc(x.resist)}</div>
     </div>`;}).join("")||'<div class="empty">No matches.</div>';
 }
-const PRE_INJURY_STEPS=7828;
+/* single source of truth for the pre-injury step baseline (computed from his data, not hardcoded) */
+function preSteps(){return Math.round(BASE("steps",7660));}
 function actAvg(map,from,to){const vs=Object.entries(map).filter(([d])=>d>=from&&d<=to).map(([,v])=>v);return vs.length?vs.reduce((a,b)=>a+b,0)/vs.length:null;}
 function dstr(dt){return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0");}
 function renderActivity(){
   const steps=HEALTH.daily.steps||{};const days=Object.keys(steps).sort();
   const card=document.getElementById("actCard");
   if(!days.length){card.style.display="none";return;}
+  const PRE=preSteps();
   const today=new Date();
-  const d7=new Date(today);d7.setDate(today.getDate()-6);
-  const d28=new Date(today);d28.setDate(today.getDate()-27);
-  const a7=actAvg(steps,dstr(d7),dstr(today))||0;
-  const a28=actAvg(steps,dstr(d28),dstr(today))||0;
-  const pct=Math.round(a7/PRE_INJURY_STEPS*100);
+  const d7=new Date(today);d7.setDate(today.getDate()-7);
+  const d28=new Date(today);d28.setDate(today.getDate()-28);
+  const yestK=daysAgoStr(1);
+  // averages exclude today: it's a partial day and drags every mean down
+  const a7=actAvg(steps,dstr(d7),yestK)||0;
+  const a28=actAvg(steps,dstr(d28),yestK)||0;
+  const pct=Math.round(a7/PRE*100);
   const over8k=Object.entries(steps).filter(([d,v])=>d>=dstr(d28)&&v>=8000).length;
   document.getElementById("actStats").innerHTML=
     `<div class="stat"><div class="v">${Math.round(a7).toLocaleString()}</div><div class="l">Steps/day (7d avg)</div></div>
@@ -1469,22 +1494,25 @@ function renderActivity(){
   for(let i=55;i>=0;i--){const dt=new Date(today);dt.setDate(today.getDate()-i);const k=dstr(dt);
     labels.push(fmtShort(k));const v=steps[k]||0;data.push(v);colors.push(v>=8000?"#d97706":"#60a5fa");}
   mkChart("chSteps",{type:"bar",data:{labels,datasets:[{data,backgroundColor:colors,borderRadius:3}]},options:baseOpts});
-  // monthly arc
-  const mon={};Object.entries(steps).forEach(([d,v])=>{const m=d.slice(0,7);(mon[m]=mon[m]||[]).push(v);});
+  // monthly arc — exclude today's partial day; label current month partial
+  const todayK=todayStr(),curMonth=todayK.slice(0,7);
+  const mon={};Object.entries(steps).forEach(([d,v])=>{if(d===todayK)return;const m=d.slice(0,7);(mon[m]=mon[m]||[]).push(v);});
   const mkeys=Object.keys(mon).sort();
   const mavg=mkeys.map(m=>Math.round(mon[m].reduce((a,b)=>a+b,0)/mon[m].length));
-  mkChart("chArc",{type:"line",data:{labels:mkeys,datasets:[
+  mkChart("chArc",{type:"line",data:{labels:mkeys.map(m=>m===curMonth?m+" (partial)":m),datasets:[
     {data:mavg,borderColor:"#2563eb",backgroundColor:"rgba(37,99,235,.1)",fill:true,tension:.3,pointRadius:4},
-    {data:mkeys.map(()=>PRE_INJURY_STEPS),borderColor:"#94a3b8",borderDash:[6,4],pointRadius:0}]},options:baseOpts});
+    {data:mkeys.map(()=>PRE),borderColor:"#94a3b8",borderDash:[6,4],pointRadius:0}]},options:baseOpts});
   const s8=Object.entries(steps).filter(([d,v])=>d>=dstr(d28)&&v>=8000);
   const si=document.getElementById("stepsInsight");
   if(si)si.innerHTML=`<b>Your ceiling:</b> every swelling episode so far (mid-June, Jun 15, post-wedding) followed a day at 8,000+ steps — the amber bars. You've had ${s8.length} amber day${s8.length===1?"":"s"} in the last 4 weeks. The move isn't avoiding them; it's spending them deliberately: keep the day after an amber day light, and don't stack one on a heavy leg day.`;
   const ai=document.getElementById("arcInsight");
-  if(ai&&mavg.length>=3){
-    const cur=mavg[mavg.length-1],prev=mavg[mavg.length-2];
-    const slope=cur-prev;
-    const monthsTo=slope>0?Math.ceil((PRE_INJURY_STEPS-cur)/slope):null;
-    ai.innerHTML=`<b>The rebuild:</b> from 985 steps/day in February to ${cur.toLocaleString()} now — ${Math.round(cur/PRE_INJURY_STEPS*100)}% of your pre-injury 7,800 (dashed line). Recent slope ~${slope>0?"+":""}${slope.toLocaleString()}/day per month${monthsTo&&monthsTo<12?`, which reaches baseline around <b>${new Date(Date.now()+monthsTo*30*864e5).toLocaleDateString("en-US",{month:"long"})}</b>`:""}. Note the ceiling insight above: getting back to 7,800 has to come from raising tolerance, not just walking more.`;
+  const full=mkeys.filter(m=>m!==curMonth);
+  if(ai&&full.length>=3){
+    const favg=full.map(m=>Math.round(mon[m].reduce((a,b)=>a+b,0)/mon[m].length));
+    const slope=favg[favg.length-1]-favg[favg.length-2]; // last two COMPLETE months only
+    const now=Math.round(a28); // rolling 28d avg, not a partial-month figure
+    const monthsTo=slope>0?Math.ceil((PRE-now)/slope):null;
+    ai.innerHTML=`<b>The rebuild:</b> from 985 steps/day in February to ${now.toLocaleString()} now (rolling 28-day avg) — ${Math.round(now/PRE*100)}% of your pre-injury ${PRE.toLocaleString()} (dashed line). Slope over the last two complete months: ${slope>0?"+":""}${slope.toLocaleString()}/day per month${monthsTo&&monthsTo>0&&monthsTo<12?`, on pace to reach baseline around <b>${new Date(Date.now()+monthsTo*30*864e5).toLocaleDateString("en-US",{month:"long"})}</b>`:""}. Note the ceiling insight above: getting back to ${PRE.toLocaleString()} has to come from raising tolerance, not just walking more.`;
   }
 }
 function renderRecoveryCharts(){
@@ -1501,7 +1529,7 @@ function renderRecoveryCharts(){
     const recent=Object.entries(sl).filter(([d])=>d>=dstr(d28)).map(([,v])=>v);
     const avg=recent.length?(recent.reduce((a,b)=>a+b,0)/recent.length):null;
     const short=recent.filter(v=>v<6.5).length;
-    document.getElementById("sleepInsight").innerHTML=avg?`<b>Why this matters for your knee:</b> tissue repair — including your healing avulsion and meniscus — happens disproportionately during sleep. You're averaging <b>${avg.toFixed(1)}h</b> over the last 4 weeks (pre-injury: 7.7h)${short?`, with ${short} short night${short>1?"s":""} (&lt;6.5h, red bars)`:""}. Under ~7h, next-day training quality and symptom tolerance both tend to dip — treat a red-bar night like a big-walking day: keep the next session easier.`:"";
+    document.getElementById("sleepInsight").innerHTML=avg?`<b>Why this matters for your knee:</b> tissue repair — including your healing avulsion and meniscus — happens disproportionately during sleep. You're averaging <b>${avg.toFixed(1)}h</b> over the last 4 weeks (pre-injury: ${BASE("sleepHrs",7.7).toFixed(1)}h)${short?`, with ${short} short night${short>1?"s":""} (&lt;6.5h, red bars)`:""}. Under ~7h, next-day training quality and symptom tolerance both tend to dip — treat a red-bar night like a big-walking day: keep the next session easier.`:"";
   }else document.getElementById("chSleep").closest(".card").style.display="none";
   // heart chart
   const rh=HEALTH.daily.restingHR||{},hv=HEALTH.daily.hrv||{};
